@@ -1,0 +1,10 @@
+venv
+icons
+__pycache__
+*.pyc
+*.csv
+*.log
+*.json
+*.db
+*.sqlite3
+.vscode
