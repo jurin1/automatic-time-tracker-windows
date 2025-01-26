@@ -22,3 +22,6 @@ class ActivityMonitor:
         mouse_listener.start()
         keyboard_listener.start()
         return mouse_listener, keyboard_listener
+
+    def get_last_activity_time(self):
+        return self.last_activity

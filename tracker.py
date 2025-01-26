@@ -2,7 +2,7 @@ import logging
 import sys
 import psutil
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QLabel, QVBoxLayout, QWidget, QFileDialog, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QDialog, QHBoxLayout
 from PyQt5.QtGui import QFont, QIcon, QPixmap
 from PyQt5.QtCore import QTimer, Qt
@@ -14,7 +14,6 @@ from activity_monitor import ActivityMonitor
 from video_detection import get_active_window_name
 from report_window import ReportWindow
 from real_time_window import RealTimeWindow
-
 
 
 class ActivityTracker(QMainWindow):
@@ -38,6 +37,9 @@ class ActivityTracker(QMainWindow):
         self.last_active_time = None  # Added
         self.transition_period = 1  # 1 second transition period
         self.current_logs = []
+        self.pause_duration = 10  # 10 seconds for debug
+        self.is_paused = False
+        self.pause_start_time = None
 
         self.activity_monitor = ActivityMonitor()
         self.mouse_listener, self.keyboard_listener = self.activity_monitor.start()
@@ -123,32 +125,76 @@ class ActivityTracker(QMainWindow):
 
     def update_time(self):
         try:
-            window_info = get_active_window_name()
-            new_window = window_info
+            if self.is_paused:
+                if self.check_for_activity():
+                    self.end_pause()
+                    self.track_time()
+            else:
+                if self.check_for_pause():
+                    self.start_pause()
+                else:
+                    window_info = get_active_window_name()
+                    new_window = window_info
 
-            if new_window != self.active_window:
-                # Beende die aktuelle Activity aufgrund eines Fensterwechsels
-                self.end_activity(reason="window_change")
-                self.active_window = new_window
-                self.start_time = datetime.now()
+                    if new_window != self.active_window:
+                        # Beende die aktuelle Activity aufgrund eines Fensterwechsels
+                        self.end_activity(reason="window_change")
+                        self.active_window = new_window
+                        self.start_time = datetime.now()
 
-                # Startet nur ein task, wenn auch ein fenster aktiv ist
-                if self.active_window != "Kein aktives Fenster":
-                    self.current_logs.append(
-                        {'window': self.active_window, 'start': self.start_time, 'end': None, 'duration': 0, 'type': "activity"})
-                logging.info(f"Window changed to: {self.active_window}")
+                        # Startet nur ein task, wenn auch ein fenster aktiv ist
+                        if self.active_window != "Kein aktives Fenster":
+                            self.current_logs.append(
+                                {'window': self.active_window, 'start': self.start_time, 'end': None, 'duration': 0, 'type': "activity"})
+                        logging.info(
+                            f"Window changed to: {self.active_window}")
 
-            if self.active_window != "Kein aktives Fenster" and self.start_time:
-                duration = (datetime.now() - self.start_time).total_seconds()
-                for log in self.current_logs:
-                    if log['window'] == self.active_window and log['end'] is None:
-                        log['duration'] = duration
-                        self.activity_log.update_log_duration(
-                            log['window'], log['duration'])  # Hier wird die duration in der datenbank geupdatet
-                        break
+                    if self.active_window != "Kein aktives Fenster" and self.start_time:
+                        duration = (datetime.now() -
+                                    self.start_time).total_seconds()
+                        for log in self.current_logs:
+                            if log['window'] == self.active_window and log['end'] is None:
+                                log['duration'] = duration
+                                self.activity_log.update_log_duration(
+                                    log['window'], log['duration'])  # Hier wird die duration in der datenbank geupdatet
+                                break
             self.update_activity_log_table()
         except Exception as e:
             logging.error(f"Error during update_time: {e}")
+
+    def check_for_pause(self):
+        last_activity_time = self.activity_monitor.get_last_activity_time()
+        if (datetime.now() - last_activity_time).total_seconds() >= self.pause_duration:
+            return True
+        return False
+
+    def start_pause(self):
+        self.end_activity(reason="pause_start")
+        self.is_paused = True
+        self.pause_start_time = datetime.now()
+        logging.info("Pause started.")
+        self.current_logs.append(
+            {'window': 'Pause', 'start': self.pause_start_time, 'end': None, 'duration': 0, 'type': "pause"})
+
+    def check_for_activity(self):
+        last_activity_time = self.activity_monitor.get_last_activity_time()
+        if (datetime.now() - last_activity_time).total_seconds() < self.pause_duration:
+            return True
+        return False
+
+    def end_pause(self):
+        self.is_paused = False
+        pause_end_time = datetime.now()
+        current_pause_log = None
+        for log in reversed(self.current_logs):
+            if log['window'] == "Pause" and log['end'] is None:
+                current_pause_log = log
+                break
+        if current_pause_log:
+            current_pause_log['end'] = pause_end_time
+            current_pause_log['duration'] = (
+                pause_end_time - current_pause_log['start']).total_seconds()
+        logging.info("Pause ended.")
 
     def start_database_update_timer(self):
         self.database_timer = QTimer(self)
@@ -189,8 +235,8 @@ class ActivityTracker(QMainWindow):
                     current_log['end'] - current_log['start']).total_seconds()
 
             if reason == "window_change" and current_log and current_log["window"] != "Kein aktives Fenster":
-               self.last_active_window = current_log["window"]
-               self.last_active_time = end_time
+                self.last_active_window = current_log["window"]
+                self.last_active_time = end_time
             self.active_window = None
             self.start_time = None
             logging.info(f"Activity ended. Reason: {reason}")
@@ -221,10 +267,10 @@ class ActivityTracker(QMainWindow):
 
     def update_activity_log_table(self):
         try:
-             if hasattr(self, 'realtime_window') and self.realtime_window.isVisible():
+            if hasattr(self, 'realtime_window') and self.realtime_window.isVisible():
                 self.realtime_window.update_table()
         except Exception as e:
-             logging.error(f"Error updating real-time table: {e}")
+            logging.error(f"Error updating real-time table: {e}")
 
     def closeEvent(self, event):
         try:
