@@ -3,7 +3,7 @@ import sys
 import psutil
 import pandas as pd
 from datetime import datetime, timedelta
-from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QLabel, QVBoxLayout, QWidget, QFileDialog, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QDialog, QHBoxLayout
+from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QLabel, QVBoxLayout, QWidget, QFileDialog, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QDialog, QHBoxLayout, QSpinBox, QCheckBox, QComboBox, QDialogButtonBox, QFormLayout
 from PyQt5.QtGui import QFont, QIcon, QPixmap
 from PyQt5.QtCore import QTimer, Qt
 import matplotlib.pyplot as plt
@@ -14,6 +14,140 @@ from activity_monitor import ActivityMonitor
 from video_detection import get_active_window_name
 from report_window import ReportWindow
 from real_time_window import RealTimeWindow
+import configparser
+import os
+
+
+CONFIG_FILE = "config.ini"
+
+
+def create_config_file():
+    """
+        Erstellt die Konfigurationsdatei, wenn sie nicht existiert.
+        """
+    if not os.path.exists(CONFIG_FILE):
+        config = configparser.ConfigParser()
+        config["pause"] = {
+            "detection_method": "inactivity",
+            "inactivity_time": "10",
+            "manual_start": "false",
+            "manual_end": "false",
+        }
+        config["database"] = {
+            "upload_interval": "60",
+            "database_path": "activity.db",
+        }
+        config["startup"] = {
+            "auto_start": "false",
+        }
+        config["notifications"] = {
+            "pause_notification": "false",
+        }
+        with open(CONFIG_FILE, "w") as configfile:
+            config.write(configfile)
+
+
+class SettingsWindow(QDialog):
+    def __init__(self, parent, config, tracker):
+        super().__init__(parent)
+        self.setWindowTitle("Settings")
+        self.setGeometry(200, 200, 400, 300)
+        self.setStyleSheet("background-color: #3b4252; color: #eceff4;")
+        self.config = config
+        self.tracker = tracker
+
+        self.initUI()
+
+    def initUI(self):
+        layout = QFormLayout()
+
+        # Pause Settings
+        self.pause_detection_method = QComboBox()
+        self.pause_detection_method.addItems(["inactivity", "manual"])
+        self.pause_detection_method.setCurrentText(
+            self.config["pause"]["detection_method"])
+        layout.addRow("Pause Detection Method:", self.pause_detection_method)
+
+        self.pause_inactivity_time = QSpinBox()
+        self.pause_inactivity_time.setMinimum(1)
+        self.pause_inactivity_time.setValue(
+            int(self.config["pause"]["inactivity_time"]))
+        layout.addRow("Inactivity Time (seconds):", self.pause_inactivity_time)
+
+        self.pause_manual_start = QCheckBox()
+        self.pause_manual_start.setChecked(
+            self.config["pause"].getboolean("manual_start"))
+        layout.addRow("Manual Start:", self.pause_manual_start)
+
+        self.pause_manual_end = QCheckBox()
+        self.pause_manual_end.setChecked(
+            self.config["pause"].getboolean("manual_end"))
+        layout.addRow("Manual End:", self.pause_manual_end)
+
+        # Database Settings
+        self.database_upload_interval = QSpinBox()
+        self.database_upload_interval.setMinimum(1)
+        self.database_upload_interval.setValue(
+            int(self.config["database"]["upload_interval"]))
+        layout.addRow("Database Upload Interval (seconds):",
+                      self.database_upload_interval)
+
+        self.database_path = QFileDialog()
+        self.database_path_button = QPushButton("Select Path")
+        self.database_path_button.clicked.connect(self.open_file_dialog)
+        self.database_path_label = QLabel(
+            self.config["database"]["database_path"])
+        path_layout = QHBoxLayout()
+        path_layout.addWidget(self.database_path_label)
+        path_layout.addWidget(self.database_path_button)
+        layout.addRow("Database Path:", path_layout)
+
+        # Startup Settings
+        self.startup_auto_start = QCheckBox()
+        self.startup_auto_start.setChecked(
+            self.config["startup"].getboolean("auto_start"))
+        layout.addRow("Auto Start:", self.startup_auto_start)
+
+        # Notification Settings
+        self.notifications_pause_notification = QCheckBox()
+        self.notifications_pause_notification.setChecked(
+            self.config["notifications"].getboolean("pause_notification"))
+        layout.addRow("Pause Notification:",
+                      self.notifications_pause_notification)
+
+        # Buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.save_settings)
+        button_box.rejected.connect(self.reject)
+        layout.addRow(button_box)
+
+        self.setLayout(layout)
+
+    def open_file_dialog(self):
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "Select Database File", "", "DB Files (*.db);;All Files (*)")
+        if filepath:
+            self.database_path_label.setText(filepath)
+
+    def save_settings(self):
+        self.config["pause"]["detection_method"] = self.pause_detection_method.currentText()
+        self.config["pause"]["inactivity_time"] = str(
+            self.pause_inactivity_time.value())
+        self.config["pause"]["manual_start"] = str(
+            self.pause_manual_start.isChecked()).lower()
+        self.config["pause"]["manual_end"] = str(
+            self.pause_manual_end.isChecked()).lower()
+        self.config["database"]["upload_interval"] = str(
+            self.database_upload_interval.value())
+        self.config["database"]["database_path"] = self.database_path_label.text()
+        self.config["startup"]["auto_start"] = str(
+            self.startup_auto_start.isChecked()).lower()
+        self.config["notifications"]["pause_notification"] = str(
+            self.notifications_pause_notification.isChecked()).lower()
+
+        self.tracker.update_config(self.config)
+        self.accept()
 
 
 class ActivityTracker(QMainWindow):
@@ -31,15 +165,26 @@ class ActivityTracker(QMainWindow):
 
         self.active_window = None
         self.start_time = None
-        self.activity_log = ActivityLog()
+
+        # Load Configuration
+        create_config_file()  # Stelle sicher, dass die Datei existiert
+        self.config = self.load_config()
+
+        self.activity_log = ActivityLog(
+            db_path=self.config["database"]["database_path"])
 
         self.last_active_window = None  # Added
         self.last_active_time = None  # Added
         self.transition_period = 1  # 1 second transition period
         self.current_logs = []
-        self.pause_duration = 10  # 10 seconds for debug
+        self.pause_duration = int(self.config["pause"]["inactivity_time"])
         self.is_paused = False
         self.pause_start_time = None
+        self.auto_start = self.config["startup"].getboolean("auto_start")
+        self.pause_notification = self.config["notifications"].getboolean(
+            "pause_notification")
+        self.database_upload_interval = int(
+            self.config["database"]["upload_interval"])
 
         self.activity_monitor = ActivityMonitor()
         self.mouse_listener, self.keyboard_listener = self.activity_monitor.start()
@@ -66,6 +211,10 @@ class ActivityTracker(QMainWindow):
         self.realtime_tracker_button = self.create_button(
             "Real-Time Tracker", "icons/tracker_icon.png", self.show_realtime_window)
         self.button_layout.addWidget(self.realtime_tracker_button)
+
+        self.settings_button = self.create_button(
+            "Settings", "icons/settings_icon.png", self.show_settings_window)
+        self.button_layout.addWidget(self.settings_button)
 
         layout.addLayout(self.button_layout)
 
@@ -94,6 +243,43 @@ class ActivityTracker(QMainWindow):
         button.setIcon(QIcon(QPixmap(icon_path)))  # Add your icon path here
         button.clicked.connect(callback)
         return button
+
+    def load_config(self):
+        """
+            Lädt die Konfiguration aus der Datei.
+            """
+        config = configparser.ConfigParser()
+        config.read(CONFIG_FILE)
+        return config
+
+    def update_config(self, config):
+        """
+            Aktualisiert die Konfiguration und speichert sie in der Datei.
+            """
+        self.config = config
+        with open(CONFIG_FILE, "w") as configfile:
+            self.config.write(configfile)
+
+        self.pause_duration = int(self.config["pause"]["inactivity_time"])
+        self.auto_start = self.config["startup"].getboolean("auto_start")
+        self.pause_notification = self.config["notifications"].getboolean(
+            "pause_notification")
+        self.database_upload_interval = int(
+            self.config["database"]["upload_interval"])
+
+        self.activity_log = ActivityLog(
+            db_path=self.config["database"]["database_path"])
+
+        self.start_database_update_timer()
+        logging.info("Configuration updated.")
+
+    def show_settings_window(self):
+        try:
+            settings_window = SettingsWindow(self, self.config, self)
+            settings_window.exec_()
+            logging.info("Settings window opened.")
+        except Exception as e:
+            logging.error(f"Error showing settings window: {e}")
 
     def delete_database(self):
         """
@@ -199,7 +385,8 @@ class ActivityTracker(QMainWindow):
     def start_database_update_timer(self):
         self.database_timer = QTimer(self)
         self.database_timer.timeout.connect(self.update_database)
-        self.database_timer.start(10000)  # Alle 60 Sekunden
+        self.database_timer.start(
+            self.database_upload_interval * 1000)  # Alle x Sekunden
         logging.info("Database update timer started.")
 
     def update_database(self):
